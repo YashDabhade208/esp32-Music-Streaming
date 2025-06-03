@@ -4,8 +4,8 @@
 #include <FS.h>
 
 // Wi-Fi credentials
-const char* ssid = "Airtel_ravi_5267";
-const char* password = "Housemates";
+const char* ssid = "";
+const char* password = "";
 
 // Static IP config
 IPAddress local_IP(192, 168, 1, 6);
@@ -13,8 +13,8 @@ IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
 
 // DuckDNS credentials
-const char* duckdns_token = "9530948e-6496-4ea3-8583-d3c602a3f2a9";
-const char* duckdns_domain = "songs4everybody";
+const char* duckdns_token = "your_duck_dns_token";
+const char* duckdns_domain = "your_duck_dns_domain";
 
 WebServer server(80);
 
