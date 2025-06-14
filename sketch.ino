@@ -1,26 +1,35 @@
 #include <WiFi.h>
 #include <WebServer.h>
-#include <SPIFFS.h>
-#include <FS.h>
+#include <SD.h>
+#include <SPI.h>
 
 // Wi-Fi credentials
-const char* ssid = "";
-const char* password = "";
+const char* ssid = "Airtel_ravi_5267";
+const char* password = "Housemates";
 
 // Static IP config
 IPAddress local_IP(192, 168, 1, 6);
 IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
+IPAddress primaryDNS(8, 8, 8, 8);    // Google DNS
+IPAddress secondaryDNS(8, 8, 4, 4);  // Google DNS
 
 // DuckDNS credentials
-const char* duckdns_token = "your_duck_dns_token";
-const char* duckdns_domain = "your_duck_dns_domain";
+const char* duckdns_token = "9530948e-6496-4ea3-8583-d3c602a3f2a9";
+const char* duckdns_domain = "songs4everybody";
+
+// SD Card pins
+#define SD_CS 5  // Chip Select pin for SD card
 
 WebServer server(80);
 
 // Logging system
 String debugLogs = "";
 const int MAX_LOG_SIZE = 10000; // Limit log size to prevent memory issues
+
+// DuckDNS retry configuration
+const int MAX_DUCKDNS_RETRIES = 3;
+const int DUCKDNS_RETRY_DELAY = 5000; // 5 seconds between retries
 
 void addLog(String message) {
   String timestamp = String(millis());
@@ -49,64 +58,171 @@ String getContentType(String filename) {
   else return "application/octet-stream";
 }
 
-void updateDuckDNS() {
-  addLog("Starting DuckDNS update...");
+String getPublicIP() {
+  addLog("Getting public IP from ipinfo.io...");
   WiFiClient client;
-  
-  if (client.connect("www.duckdns.org", 80)) {
-    String request = "GET /update?domains=" + String(duckdns_domain) + "&token=" + String(duckdns_token) + " HTTP/1.1\r\n";
-    request += "Host: www.duckdns.org\r\n";
-    request += "Connection: close\r\n\r\n";
+  if (client.connect("ipinfo.io", 80)) {
+    addLog("Connected to ipinfo.io");
+    client.println("GET /ip HTTP/1.1");
+    client.println("Host: ipinfo.io");
+    client.println("Connection: close");
+    client.println();
     
-    client.print(request);
-    
-    // Wait for response with watchdog feeding
-    unsigned long timeout = millis() + 10000; // 10 second timeout
+    unsigned long timeout = millis() + 10000;
     while (client.available() == 0 && millis() < timeout) {
       delay(50);
-      yield(); // Feed the watchdog
+      yield();
     }
     
     if (client.available()) {
       String response = client.readString();
-      if (response.indexOf("OK") > 0) {
-        addLog("DuckDNS Update successful");
-      } else {
-        addLog("DuckDNS Update failed: " + response.substring(0, 100));
+      addLog("Public IP response: " + response);
+      
+      // Find the IP address in the response
+      int ipStart = response.indexOf("\r\n\r\n");
+      if (ipStart > 0) {
+        String ip = response.substring(ipStart + 4);
+        ip.trim(); // Remove any whitespace
+        addLog("Extracted IP: " + ip);
+        client.stop();
+        return ip;
       }
-    } else {
-      addLog("DuckDNS Update timeout");
     }
     client.stop();
-  } else {
-    addLog("DuckDNS connection failed");
   }
+  
+  // Fallback to another service if ipinfo.io fails
+  addLog("Trying fallback service (icanhazip.com)...");
+  if (client.connect("icanhazip.com", 80)) {
+    addLog("Connected to icanhazip.com");
+    client.println("GET / HTTP/1.1");
+    client.println("Host: icanhazip.com");
+    client.println("Connection: close");
+    client.println();
+    
+    unsigned long timeout = millis() + 10000;
+    while (client.available() == 0 && millis() < timeout) {
+      delay(50);
+      yield();
+    }
+    
+    if (client.available()) {
+      String response = client.readString();
+      addLog("Fallback IP response: " + response);
+      
+      // Find the IP address in the response
+      int ipStart = response.indexOf("\r\n\r\n");
+      if (ipStart > 0) {
+        String ip = response.substring(ipStart + 4);
+        ip.trim(); // Remove any whitespace
+        addLog("Extracted IP: " + ip);
+        client.stop();
+        return ip;
+      }
+    }
+    client.stop();
+  }
+  
+  addLog("Failed to get public IP from both services");
+  return "";
+}
+
+bool updateDuckDNS() {
+  addLog("Starting DuckDNS update...");
+  String publicIP = getPublicIP();
+  if (publicIP == "") {
+    addLog("❌ Could not get public IP, using local IP");
+    publicIP = WiFi.localIP().toString();
+  }
+  
+  addLog("Current IP: " + publicIP);
+  addLog("DuckDNS Domain: " + String(duckdns_domain));
+  
+  for (int attempt = 1; attempt <= MAX_DUCKDNS_RETRIES; attempt++) {
+    addLog("Attempt " + String(attempt) + " of " + String(MAX_DUCKDNS_RETRIES));
+    
+    WiFiClient client;
+    addLog("Attempting to connect to DuckDNS server...");
+    
+    if (client.connect("www.duckdns.org", 80)) {
+      addLog("Connected to DuckDNS server");
+      
+      String request = "GET /update?domains=" + String(duckdns_domain) + "&token=" + String(duckdns_token) + "&ip=" + publicIP + " HTTP/1.1\r\n";
+      request += "Host: www.duckdns.org\r\n";
+      request += "Connection: close\r\n\r\n";
+      
+      addLog("Sending request: " + request);
+      client.print(request);
+      
+      // Wait for response with watchdog feeding
+      unsigned long timeout = millis() + 10000; // 10 second timeout
+      addLog("Waiting for response...");
+      
+      while (client.available() == 0 && millis() < timeout) {
+        delay(50);
+        yield(); // Feed the watchdog
+      }
+      
+      if (client.available()) {
+        String response = client.readString();
+        addLog("Received response: " + response.substring(0, 100));
+        
+        if (response.indexOf("OK") > 0) {
+          addLog("✅ DuckDNS Update successful");
+          addLog("Public IP: " + publicIP);
+          client.stop();
+          return true;
+        } else if (response.indexOf("KO") > 0) {
+          addLog("❌ DuckDNS Update failed - Invalid token or domain");
+        } else {
+          addLog("❌ DuckDNS Update failed - Unknown response: " + response.substring(0, 100));
+        }
+      } else {
+        addLog("❌ DuckDNS Update timeout - No response received");
+      }
+      
+      addLog("Closing connection");
+      client.stop();
+    } else {
+      addLog("❌ DuckDNS connection failed");
+      addLog("WiFi Status: " + String(WiFi.status()));
+      addLog("RSSI: " + String(WiFi.RSSI()) + " dBm");
+    }
+    
+    if (attempt < MAX_DUCKDNS_RETRIES) {
+      addLog("Waiting " + String(DUCKDNS_RETRY_DELAY/1000) + " seconds before retry...");
+      delay(DUCKDNS_RETRY_DELAY);
+    }
+  }
+  
+  addLog("❌ All DuckDNS update attempts failed");
+  return false;
 }
 
 // Handle file upload (via POST /upload)
 void handleUpload() {
   HTTPUpload& upload = server.upload();
-  static File fsUploadFile;
+  static File uploadFile;
   
   if (upload.status == UPLOAD_FILE_START) {
     String filename = "/" + upload.filename;
     addLog("Upload Start: " + filename + " (Size will be determined)");
     
-    if (SPIFFS.exists(filename)) {
-      SPIFFS.remove(filename);
+    if (SD.exists(filename)) {
+      SD.remove(filename);
       addLog("Removed existing file: " + filename);
     }
     
-    fsUploadFile = SPIFFS.open(filename, FILE_WRITE);
-    if (!fsUploadFile) {
+    uploadFile = SD.open(filename, FILE_WRITE);
+    if (!uploadFile) {
       addLog("ERROR: Failed to open file for writing: " + filename);
       server.send(500, "text/plain", "Failed to create file");
       return;
     }
     
   } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (fsUploadFile) {
-      size_t written = fsUploadFile.write(upload.buf, upload.currentSize);
+    if (uploadFile) {
+      size_t written = uploadFile.write(upload.buf, upload.currentSize);
       addLog("Upload chunk written: " + String(written) + "/" + String(upload.currentSize) + " bytes");
       if (written != upload.currentSize) {
         addLog("ERROR: Write size mismatch!");
@@ -116,15 +232,15 @@ void handleUpload() {
     }
     
   } else if (upload.status == UPLOAD_FILE_END) {
-    if (fsUploadFile) {
-      fsUploadFile.close();
+    if (uploadFile) {
+      uploadFile.close();
       addLog("Upload completed: " + upload.filename + " (" + String(upload.totalSize) + " bytes)");
     }
     
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     addLog("Upload aborted: " + upload.filename);
-    if (fsUploadFile) {
-      fsUploadFile.close();
+    if (uploadFile) {
+      uploadFile.close();
     }
     server.send(500, "text/plain", "Upload Aborted");
     return;
@@ -137,9 +253,30 @@ void setup() {
   
   addLog("ESP32 Music Player starting...");
   addLog("Free heap: " + String(ESP.getFreeHeap()));
+  addLog("ESP32 Chip ID: " + String((uint32_t)(ESP.getEfuseMac() >> 32), HEX));
+  addLog("CPU Frequency: " + String(ESP.getCpuFreqMHz()) + " MHz");
 
-  if (!WiFi.config(local_IP, gateway, subnet)) {
-    addLog("ERROR: STA Failed to configure static IP");
+  // Initialize SD card
+  if (!SD.begin(SD_CS)) {
+    addLog("❌ SD Card Mount Failed");
+    addLog("SD Card CS Pin: " + String(SD_CS));
+    return;
+  } else {
+    addLog("✅ SD Card mounted successfully");
+    uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
+      addLog("❌ No SD card attached");
+      return;
+    }
+    addLog("SD Card Type: " + String(cardType));
+    addLog("SD Card Size: " + String(SD.cardSize() / (1024 * 1024)) + " MB");
+  }
+
+  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
+    addLog("❌ STA Failed to configure static IP and DNS");
+    addLog("Attempting to continue with DHCP...");
+  } else {
+    addLog("✅ Static IP and DNS configured successfully");
   }
 
   addLog("Connecting to WiFi: " + String(ssid));
@@ -151,6 +288,8 @@ void setup() {
     wifiAttempts++;
     if (wifiAttempts % 10 == 0) {
       addLog("WiFi connection attempt: " + String(wifiAttempts));
+      addLog("WiFi Status: " + String(WiFi.status()));
+      addLog("RSSI: " + String(WiFi.RSSI()) + " dBm");
     }
   }
   
@@ -158,49 +297,40 @@ void setup() {
     addLog("✅ Connected to WiFi");
     addLog("IP Address: " + WiFi.localIP().toString());
     addLog("Gateway: " + WiFi.gatewayIP().toString());
+    addLog("Subnet Mask: " + WiFi.subnetMask().toString());
+    addLog("DNS: " + WiFi.dnsIP().toString());
+    addLog("RSSI: " + String(WiFi.RSSI()) + " dBm");
+    addLog("Channel: " + String(WiFi.channel()));
   } else {
     addLog("❌ Failed to connect to WiFi");
+    addLog("Last WiFi Status: " + String(WiFi.status()));
   }
 
-  if (!SPIFFS.begin(true)) {
-    addLog("❌ SPIFFS Mount Failed");
-    return;
-  } else {
-    addLog("✅ SPIFFS mounted successfully");
-    addLog("SPIFFS total: " + String(SPIFFS.totalBytes()) + " bytes");
-    addLog("SPIFFS used: " + String(SPIFFS.usedBytes()) + " bytes");
-  }
-
-  // Note: ESP32 WebServer doesn't have setTimeout method
-  // Upload timeouts are handled differently in the client-side JavaScript
-
-  // Logs endpoint for remote debugging
-  server.on("/logs", HTTP_GET, []() {
-    addLog("Logs requested from: " + server.client().remoteIP().toString());
-    String html = "<!DOCTYPE html><html><head><title>ESP32 Logs</title>";
-    html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-    html += "<style>body{font-family:monospace;background:#000;color:#0f0;padding:20px;}";
-    html += "pre{white-space:pre-wrap;word-wrap:break-word;}</style>";
-    html += "<script>setTimeout(()=>location.reload(),10000);</script></head>";
-    html += "<body><h2>ESP32 Debug Logs (Auto-refresh every 10s)</h2>";
-    html += "<pre>" + debugLogs + "</pre></body></html>";
-    server.send(200, "text/html", html);
-  });
-
-  // Clear logs endpoint
-  server.on("/clearlogs", HTTP_GET, []() {
-    debugLogs = "";
-    addLog("Logs cleared by user");
-    server.send(200, "text/plain", "Logs cleared");
+  // Add a test endpoint
+  server.on("/test", HTTP_GET, []() {
+    String clientIP = server.client().remoteIP().toString();
+    int clientPort = server.client().remotePort();
+    int serverPort = server.client().localPort();
+    
+    addLog("Test endpoint called from: " + clientIP + ":" + String(clientPort));
+    addLog("Server port: " + String(serverPort));
+    
+    String response = "Server is running on port " + String(serverPort) + "\n";
+    response += "Client IP: " + clientIP + "\n";
+    response += "Client Port: " + String(clientPort) + "\n";
+    response += "Server Port: " + String(serverPort) + "\n";
+    response += "Time: " + String(millis() / 1000) + " seconds\n";
+    
+    server.send(200, "text/plain", response);
   });
 
   // Serve file list as JSON with better error handling
   server.on("/list", HTTP_GET, []() {
     addLog("File list requested");
     String fileList = "[";
-    File root = SPIFFS.open("/");
+    File root = SD.open("/");
     if (!root) {
-      addLog("ERROR: Failed to open SPIFFS root");
+      addLog("ERROR: Failed to open SD root");
       server.send(500, "application/json", "{\"error\":\"Failed to open filesystem\"}");
       return;
     }
@@ -750,18 +880,18 @@ void setup() {
     server.send(303);
   }, handleUpload);
 
-  // Serve audio files or other SPIFFS files with better error handling
+  // Serve audio files or other SD files with better error handling
   server.onNotFound([]() {
     String path = server.uri();
     addLog("File requested: " + path + " from " + server.client().remoteIP().toString());
 
-    if (!SPIFFS.exists(path)) {
+    if (!SD.exists(path)) {
       addLog("ERROR: File not found: " + path);
       server.send(404, "text/plain", "File not found: " + path);
       return;
     }
 
-    File file = SPIFFS.open(path, "r");
+    File file = SD.open(path, "r");
     if (!file) {
       addLog("ERROR: Could not open file: " + path);
       server.send(500, "text/plain", "Could not open file");
@@ -784,6 +914,9 @@ void setup() {
   addLog("✅ HTTP server started on port 80");
   addLog("Server ready - Free heap: " + String(ESP.getFreeHeap()));
 
+  // Wait for network to stabilize before first DuckDNS update
+  addLog("Waiting 10 seconds before first DuckDNS update...");
+  delay(10000);
   updateDuckDNS();
 }
 
@@ -796,8 +929,12 @@ void loop() {
   // Periodic status log (every 5 minutes)
   static unsigned long lastStatusLog = 0;
   if (millis() - lastStatusLog > 300000) {
-    addLog("Status: Free heap=" + String(ESP.getFreeHeap()) + ", WiFi=" + 
-           (WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected"));
+    addLog("=== Status Update ===");
+    addLog("Free heap: " + String(ESP.getFreeHeap()));
+    addLog("WiFi Status: " + String(WiFi.status()));
+    addLog("RSSI: " + String(WiFi.RSSI()) + " dBm");
+    addLog("IP Address: " + WiFi.localIP().toString());
+    addLog("Uptime: " + String(millis() / 1000) + " seconds");
     lastStatusLog = millis();
   }
   
@@ -806,9 +943,18 @@ void loop() {
   if (millis() - lastWiFiCheck > 30000) {
     if (WiFi.status() != WL_CONNECTED) {
       addLog("WiFi disconnected, attempting reconnection...");
+      addLog("Last WiFi Status: " + String(WiFi.status()));
       WiFi.begin(ssid, password);
     }
     lastWiFiCheck = millis();
+  }
+  
+  // Update DuckDNS periodically (every 5 minutes)
+  static unsigned long lastDuckDNSUpdate = 0;
+  if (millis() - lastDuckDNSUpdate > 300000) {
+    addLog("=== DuckDNS Update ===");
+    updateDuckDNS();
+    lastDuckDNSUpdate = millis();
   }
   
   delay(1); // Small delay to prevent tight looping
