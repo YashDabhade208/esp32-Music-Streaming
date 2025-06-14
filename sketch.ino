@@ -4,8 +4,8 @@
 #include <SPI.h>
 
 // Wi-Fi credentials
-const char* ssid = "Airtel_ravi_5267";
-const char* password = "Housemates";
+const char* ssid = "";
+const char* password = "";
 
 // Static IP config
 IPAddress local_IP(192, 168, 1, 6);
@@ -15,8 +15,8 @@ IPAddress primaryDNS(8, 8, 8, 8);    // Google DNS
 IPAddress secondaryDNS(8, 8, 4, 4);  // Google DNS
 
 // DuckDNS credentials
-const char* duckdns_token = "9530948e-6496-4ea3-8583-d3c602a3f2a9";
-const char* duckdns_domain = "songs4everybody";
+const char* duckdns_token = "";
+const char* duckdns_domain = "";
 
 // SD Card pins
 #define SD_CS 5  // Chip Select pin for SD card
